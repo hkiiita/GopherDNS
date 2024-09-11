@@ -1,36 +1,23 @@
 package main
 
 import (
-	"errors"
 	"flag"
-	"fmt"
+	"github.com/hkiiita/GopherDNS/config"
+	"github.com/hkiiita/GopherDNS/dnsProcessing"
+	"github.com/hkiiita/GopherDNS/utils"
 	"golang.org/x/net/dns/dnsmessage"
-	"gopkg.in/yaml.v2"
 	"log"
 	"net"
 	"os"
 	"time"
-	"unicode"
 )
-
-type DomainConfig struct {
-	DomainIpMapping map[string]string `yaml:"domains"`
-}
-
-var domainValues *DomainConfig
-
-func customFlagUsageMessage() {
-	fmt.Println("Usage : main.go --dnsPort 53 --serverRefreshTime 10 --ttlForResponse 5")
-	flag.PrintDefaults()
-	os.Exit(1)
-}
 
 func main() {
 	var dnsPort = flag.Int("dnsPort", 0, "DNS port.")
 	var serverRefreshTime = flag.Int("serverRefreshTime", 0, "Time under which server would periodically refresh domain IPs")
 	var ttlForResponse = flag.Int("ttlForResponse", 0, "time to live to be sent in DNS response")
 
-	flag.Usage = customFlagUsageMessage
+	flag.Usage = utils.CustomFlagUsageMessage
 	flag.Parse()
 
 	if *dnsPort == 0 || *serverRefreshTime == 0 || *ttlForResponse == 0 {
@@ -38,7 +25,7 @@ func main() {
 	}
 
 	var err error
-	domainValues, err = readConfig()
+	err = config.SetDomainConfig()
 	if err != nil {
 		log.Fatalf("Error getting IP values for domains %+v", err)
 	}
@@ -52,7 +39,7 @@ func main() {
 		for {
 			select {
 			case <-ticker.C:
-				domainValues, err = readConfig()
+				err = config.SetDomainConfig()
 				if err != nil {
 					log.Fatalf("Error getting IP values for domains %+v", err)
 				}
@@ -91,261 +78,18 @@ func main() {
 
 func processRequest(dnsRequest []byte, conn *net.UDPConn, address *net.UDPAddr, ttlForResponse int) {
 	log.Printf("Received request... processing...")
-	//domainQuery, err := extractDomainName(request)
-	//if err != nil {
-	//	log.Printf("Domain not found. %+v", err)
-	//	return
-	//}
 
-	// Create a new DNS message parser
 	parser := dnsmessage.Parser{}
 	parsedHeader, err := parser.Start(dnsRequest)
 	parsedQuestion, err := parser.Question()
-	//
-	//_, err = getIpAddresses(domainQuery)
-	//if err != nil {
-	//	log.Printf("IP not found. %+v", err)
-	//	return
-	//}
 
-	//resp, err := createResponse(request, ip, ttlForResponse)
-	//if err != nil {
-	//	log.Printf("Unable to create response. %+v", err)
-	//	return
-	//}
-
-	resp, err := createResponseMessage(parsedHeader, parsedQuestion)
+	resp, err := dnsProcessing.CreateResponseMessage(parsedHeader, parsedQuestion, ttlForResponse)
 	if err != nil {
 		log.Printf("Unable to create response. %+v", err)
 		return
 	}
 
-	printHex(resp)
+	utils.PrintHex(resp)
 
-	sendResponse(resp, address, conn)
-}
-
-func printHex(data []byte) {
-	for i, b := range data {
-		if i%16 == 0 {
-			if i > 0 {
-				fmt.Println()
-			}
-			fmt.Printf("%04x: ", i)
-		}
-		fmt.Printf("%02x ", b)
-	}
-	fmt.Println()
-}
-
-func sendResponse(response []byte, address *net.UDPAddr, conn *net.UDPConn) {
-	_, err := conn.WriteToUDP(response, address)
-	if err != nil {
-		log.Printf("Error sending DNS response : %+v", err)
-	}
-}
-
-func createResponseMessage(parsedHeader dnsmessage.Header, parsedQuestion dnsmessage.Question) ([]byte, error) {
-
-	kakaka := parsedQuestion.Name.String()[:len(parsedQuestion.Name.String())-1]
-	println(kakaka)
-	ipStr, err := getIpAddresses(parsedQuestion.Name.String()[:len(parsedQuestion.Name.String())-1])
-	if err != nil {
-		log.Printf("Error IP not found. %+v", err)
-		return nil, err
-	}
-
-	ip4Bytes, err := getIP4ByteArray(ipStr)
-	if err != nil {
-		log.Printf("Error converting IP to 4 byte slice. %+v", err)
-		return nil, err
-	}
-
-	msg := dnsmessage.Message{
-		Header: dnsmessage.Header{
-			ID:                 parsedHeader.ID,
-			Response:           true,
-			OpCode:             0,
-			Authoritative:      true,
-			Truncated:          false,
-			RecursionDesired:   false,
-			RecursionAvailable: false,
-			AuthenticData:      false,
-			CheckingDisabled:   false,
-			RCode:              0,
-		},
-		Questions: []dnsmessage.Question{
-			{
-				Name:  parsedQuestion.Name,
-				Type:  parsedQuestion.Type,
-				Class: parsedQuestion.Class,
-			},
-		},
-		Answers: []dnsmessage.Resource{
-			{
-				Header: dnsmessage.ResourceHeader{
-					//Name:  dnsmessage.MustNewName("www.example.com."),
-					Name:  parsedQuestion.Name,
-					Type:  dnsmessage.TypeA,
-					Class: dnsmessage.ClassINET,
-					TTL:   3600,
-				},
-				Body: &dnsmessage.AResource{
-					A: ip4Bytes,
-				},
-			},
-		},
-		Authorities: make([]dnsmessage.Resource, 0),
-		Additionals: make([]dnsmessage.Resource, 0),
-	}
-
-	buf, err := msg.Pack()
-	if err != nil {
-		panic(err)
-	}
-
-	return buf, nil
-}
-
-func createResponse(query []byte, ipAddress string, ttlForResponse int) ([]byte, error) {
-	var response []byte
-	//header = append(header, query[0:1]...) // Added transaction ID
-
-	// Copy the query ID
-	response = append(response, query[0:2]...)
-
-	// Set response flags: 0x8180 (Standard query response, No error)
-	response = append(response, 0x81, 0x80)
-
-	// Set QDCOUNT (number of questions), ANCOUNT (number of answers)
-	response = append(response, 0x00, 0x01) // QDCOUNT
-	response = append(response, 0x00, 0x01) // ANCOUNT
-
-	// No NSCOUNT, ARCOUNT
-	response = append(response, 0x00, 0x00) // NSCOUNT
-	response = append(response, 0x00, 0x00) // ARCOUNT
-
-	// Copy the query section
-	response = append(response, query[12:]...)
-
-	// Answer section
-	// Name
-	response = append(response, 0xc0, 0x0c) // Name (same as question)
-	// Type A (0x0001)
-	response = append(response, 0x00, 0x01)
-	// Class IN (0x0001)
-	response = append(response, 0x00, 0x01)
-	// TTL (0x00000000)
-	response = append(response, 0x00, 0x00, 0x00, 0x40)
-	// Length of IP address (4 bytes)
-	response = append(response, 0x00, 0x04)
-	// IP address
-	ip := net.ParseIP(ipAddress).To4()
-	if ip == nil {
-		return nil, errors.New("Invaid IP")
-	}
-	response = append(response, ip...)
-	return response, nil
-}
-
-// TODO: This can be done more cleanly as a function returning next offset to be followed and number of bytes to be read.
-func extractDomainName(dnsMessage []byte) (string, error) {
-	if len(dnsMessage) < 12 {
-		log.Printf("Error | DNS message is too short.")
-		return "", errors.New("DNS message too short")
-	}
-
-	// The header of DNS message is standard 12 bytes , as of now we do not need header.
-	// but would need to parse it to know the value of `Questions` filed to get number of domains being queried.
-	// Hence, here we just extract the remaining stuff.
-	dnsMessageQueriesBytes := dnsMessage[12:]
-
-	// After the header ends, the Query section begins.
-	numberOfSubDomainBytes := dnsMessageQueriesBytes[0]
-	if numberOfSubDomainBytes == 0 {
-
-	}
-	subDomainBytes := dnsMessageQueriesBytes[1 : numberOfSubDomainBytes+1]
-	log.Printf("SUB DOMAIN : %+v", string(subDomainBytes))
-
-	numberOfDomainBytes := dnsMessageQueriesBytes[numberOfSubDomainBytes+1]
-	if numberOfDomainBytes == 0 {
-
-	}
-	domainBytesBeginIndex := numberOfSubDomainBytes + 2
-	domainBytes := dnsMessageQueriesBytes[domainBytesBeginIndex : domainBytesBeginIndex+numberOfDomainBytes+1]
-	log.Printf("DOMAIN : %+v", string(domainBytes))
-
-	numberOfTopLevelDomainBytes := dnsMessageQueriesBytes[numberOfSubDomainBytes+1+numberOfDomainBytes+1]
-	if numberOfTopLevelDomainBytes == 0 {
-
-	}
-	topLevelDomainBeginIndex := numberOfSubDomainBytes + 1 + numberOfDomainBytes + 2
-	topLevelDomainBytes := dnsMessageQueriesBytes[topLevelDomainBeginIndex : topLevelDomainBeginIndex+numberOfTopLevelDomainBytes+1]
-	log.Printf("Top Level Domain : %+v ", string(topLevelDomainBytes))
-
-	return removeControlCharacter(domainBytes), nil
-}
-
-func readConfig() (*DomainConfig, error) {
-	// Load the YAML configuration
-	file, err := os.Open("domains.yaml")
-	if err != nil {
-		log.Fatalf("Error opening YAML file: %v", err)
-		return nil, err
-	}
-	defer file.Close()
-
-	var config DomainConfig
-	decoder := yaml.NewDecoder(file)
-	err = decoder.Decode(&config)
-	if err != nil {
-		log.Fatalf("Error decoding YAML file: %v", err)
-		return nil, err
-	}
-	return &config, nil
-}
-
-func getIpAddresses(domainQuery string) (string, error) {
-	for domain, ipAddress := range domainValues.DomainIpMapping {
-		if domain == domainQuery {
-			return ipAddress, nil
-		}
-	}
-	return "", errors.New("domain not found")
-}
-
-func removeControlCharacter(data []byte) string {
-	result := ""
-	for _, b := range data {
-		if unicode.IsPrint(rune(b)) || rune(b) == '\n' || rune(b) == '\r' {
-			result += string(b)
-		}
-	}
-	return result
-}
-
-func getIP4ByteArray(ipStr string) ([4]byte, error) {
-	// Parse the IP address from the string
-	ip := net.ParseIP(ipStr)
-
-	if ip == nil {
-		fmt.Println("Invalid IP address")
-		return [4]byte{}, errors.New("Invalid IP address")
-	}
-
-	//IP address to a byte slice
-	ipv4 := ip.To4()
-
-	//if the IP address is IPv4
-	if ipv4 == nil {
-		fmt.Println("Not an IPv4 address")
-		return [4]byte{}, errors.New("Not an IPv4 address")
-	}
-
-	//byte slice to [4]byte array
-	var ipArray [4]byte
-	copy(ipArray[:], ipv4)
-
-	return ipArray, nil
+	dnsProcessing.SendResponse(resp, address, conn)
 }
