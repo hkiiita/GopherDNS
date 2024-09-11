@@ -4,6 +4,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"golang.org/x/net/dns/dnsmessage"
 	"gopkg.in/yaml.v2"
 	"log"
 	"net"
@@ -88,21 +89,32 @@ func main() {
 	}
 }
 
-func processRequest(request []byte, conn *net.UDPConn, address *net.UDPAddr, ttlForResponse int) {
+func processRequest(dnsRequest []byte, conn *net.UDPConn, address *net.UDPAddr, ttlForResponse int) {
 	log.Printf("Received request... processing...")
-	domainQuery, err := extractDomainName(request)
-	if err != nil {
-		log.Printf("Domain not found. %+v", err)
-		return
-	}
+	//domainQuery, err := extractDomainName(request)
+	//if err != nil {
+	//	log.Printf("Domain not found. %+v", err)
+	//	return
+	//}
 
-	ip, err := getIpAddresses(domainQuery)
-	if err != nil {
-		log.Printf("IP not found. %+v", err)
-		return
-	}
+	// Create a new DNS message parser
+	parser := dnsmessage.Parser{}
+	parsedHeader, err := parser.Start(dnsRequest)
+	parsedQuestion, err := parser.Question()
+	//
+	//_, err = getIpAddresses(domainQuery)
+	//if err != nil {
+	//	log.Printf("IP not found. %+v", err)
+	//	return
+	//}
 
-	resp, err := createResponse(request, ip, ttlForResponse)
+	//resp, err := createResponse(request, ip, ttlForResponse)
+	//if err != nil {
+	//	log.Printf("Unable to create response. %+v", err)
+	//	return
+	//}
+
+	resp, err := createResponseMessage(parsedHeader, parsedQuestion)
 	if err != nil {
 		log.Printf("Unable to create response. %+v", err)
 		return
@@ -131,6 +143,68 @@ func sendResponse(response []byte, address *net.UDPAddr, conn *net.UDPConn) {
 	if err != nil {
 		log.Printf("Error sending DNS response : %+v", err)
 	}
+}
+
+func createResponseMessage(parsedHeader dnsmessage.Header, parsedQuestion dnsmessage.Question) ([]byte, error) {
+
+	kakaka := parsedQuestion.Name.String()[:len(parsedQuestion.Name.String())-1]
+	println(kakaka)
+	ipStr, err := getIpAddresses(parsedQuestion.Name.String()[:len(parsedQuestion.Name.String())-1])
+	if err != nil {
+		log.Printf("Error IP not found. %+v", err)
+		return nil, err
+	}
+
+	ip4Bytes, err := getIP4ByteArray(ipStr)
+	if err != nil {
+		log.Printf("Error converting IP to 4 byte slice. %+v", err)
+		return nil, err
+	}
+
+	msg := dnsmessage.Message{
+		Header: dnsmessage.Header{
+			ID:                 parsedHeader.ID,
+			Response:           true,
+			OpCode:             0,
+			Authoritative:      true,
+			Truncated:          false,
+			RecursionDesired:   false,
+			RecursionAvailable: false,
+			AuthenticData:      false,
+			CheckingDisabled:   false,
+			RCode:              0,
+		},
+		Questions: []dnsmessage.Question{
+			{
+				Name:  parsedQuestion.Name,
+				Type:  parsedQuestion.Type,
+				Class: parsedQuestion.Class,
+			},
+		},
+		Answers: []dnsmessage.Resource{
+			{
+				Header: dnsmessage.ResourceHeader{
+					//Name:  dnsmessage.MustNewName("www.example.com."),
+					Name:  parsedQuestion.Name,
+					Type:  dnsmessage.TypeA,
+					Class: dnsmessage.ClassINET,
+					TTL:   3600,
+				},
+				Body: &dnsmessage.AResource{
+					A: ip4Bytes,
+				},
+			},
+		},
+		Authorities: make([]dnsmessage.Resource, 0),
+		Additionals: make([]dnsmessage.Resource, 0),
+	}
+
+	buf, err := msg.Pack()
+	if err != nil {
+		panic(err)
+	}
+
+	return buf, nil
 }
 
 func createResponse(query []byte, ipAddress string, ttlForResponse int) ([]byte, error) {
@@ -249,4 +323,29 @@ func removeControlCharacter(data []byte) string {
 		}
 	}
 	return result
+}
+
+func getIP4ByteArray(ipStr string) ([4]byte, error) {
+	// Parse the IP address from the string
+	ip := net.ParseIP(ipStr)
+
+	if ip == nil {
+		fmt.Println("Invalid IP address")
+		return [4]byte{}, errors.New("Invalid IP address")
+	}
+
+	//IP address to a byte slice
+	ipv4 := ip.To4()
+
+	//if the IP address is IPv4
+	if ipv4 == nil {
+		fmt.Println("Not an IPv4 address")
+		return [4]byte{}, errors.New("Not an IPv4 address")
+	}
+
+	//byte slice to [4]byte array
+	var ipArray [4]byte
+	copy(ipArray[:], ipv4)
+
+	return ipArray, nil
 }
