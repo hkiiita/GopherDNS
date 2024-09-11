@@ -10,7 +10,7 @@ Run the code as follows :
 
 The server keeps checking for updated IPs in the file periodically , after every x seconds as set by the ```serverRefreshTime``` flag. Hence, it remains updated with IPs set.
 
-Future task is to maintain a TTL based cache and look for changes in IPs from file and update the cache.
+Hence it maintains a TTL based cache and look for changes in IPs from file and updates the cache and responds accrodingly.
 
 Following is an example run :
 ![command](https://raw.githubusercontent.com/hkiiita/GopherDNS/main/docs/screenshots/command.png)
